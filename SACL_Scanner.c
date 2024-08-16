@@ -132,14 +132,31 @@ void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck) {
 
 void CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck) {
     PSECURITY_DESCRIPTOR pSD = NULL;
+    DWORD dwSDSize = 0;
+    DWORD dwResult;
     BOOL bSaclPresent = FALSE;
     BOOL bSaclDefaulted = FALSE;
     PACL pSACL = NULL;
-    DWORD dwResult;
 
-    dwResult = RegGetKeySecurity(hKey, SACL_SECURITY_INFORMATION, NULL, &pSD);
+    // First call to RegGetKeySecurity to get the size needed for the security descriptor
+    dwResult = RegGetKeySecurity(hKey, SACL_SECURITY_INFORMATION, NULL, &dwSDSize);
+
+    if (dwResult == ERROR_INSUFFICIENT_BUFFER) {
+        // Allocate the necessary buffer size
+        pSD = (PSECURITY_DESCRIPTOR)malloc(dwSDSize);
+        if (pSD == NULL) {
+            if (isSingleCheck) {
+                wprintf(L"Failed to allocate memory for security descriptor.\n");
+            }
+            return;
+        }
+
+        // Second call to RegGetKeySecurity with the allocated buffer
+        dwResult = RegGetKeySecurity(hKey, SACL_SECURITY_INFORMATION, pSD, &dwSDSize);
+    }
 
     if (dwResult == ERROR_SUCCESS) {
+        // Now we can retrieve the SACL from the security descriptor
         if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent && pSACL->AceCount > 0) {
             wprintf(L"SACL found on registry key: %s\n", subKey);
             DisplayAceInformation(pSACL, isSingleCheck);
@@ -147,14 +164,18 @@ void CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck) {
         else if (isSingleCheck) {
             wprintf(L"No SACL or empty SACL on registry key: %s\n", subKey);
         }
-        LocalFree(pSD);
     }
     else {
         if (isSingleCheck) {
             wprintf(L"Failed to retrieve SACL for registry key: %s, Error: %lu\n", subKey, dwResult);
         }
     }
+
+    if (pSD != NULL) {
+        free(pSD);
+    }
 }
+
 
 
 void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck) {
@@ -236,14 +257,50 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck) {
     WCHAR subKeyName[MAX_PATH];
     DWORD subKeyNameSize = MAX_PATH;
 
-    if (RegOpenKeyEx(hKey, subKey, 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hSubKey) == ERROR_SUCCESS) {
-        BOOL isSingleCheck = FALSE; // Disable extra output for mass scans
-        CheckSACLForRegistryKey(hSubKey, subKey, isSingleCheck);
+    // Handle root-level keys
+    if (subKey == NULL || *subKey == L'\0') {
+        //wprintf(L"At root of hive: %p\n", hKey);
+        subKey = L""; // Ensure subKey is not NULL
+    }
 
+    // Open the current registry key
+    LONG lResult = RegOpenKeyEx(hKey, subKey, 0, KEY_READ | READ_CONTROL | ACCESS_SYSTEM_SECURITY | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hSubKey);
+
+    if (lResult == ERROR_SUCCESS) {
+        // Check SACL for the current key
+        if (subKey && *subKey) {
+            CheckSACLForRegistryKey(hSubKey, subKey, isSingleCheck);
+        }
+
+        // Enumerate subkeys
         while (RegEnumKeyEx(hSubKey, dwIndex, subKeyName, &subKeyNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
             WCHAR fullSubKeyPath[MAX_PATH];
-            swprintf(fullSubKeyPath, MAX_PATH, L"%s\\%s", subKey, subKeyName);
-            EnumerateRegistryKeys(hKey, fullSubKeyPath, isSingleCheck);
+
+            // Construct the full subkey path
+            if (*subKey == L'\0') {
+                swprintf(fullSubKeyPath, MAX_PATH, L"%s", subKeyName);
+            }
+            else {
+                swprintf(fullSubKeyPath, MAX_PATH, L"%s\\%s", subKey, subKeyName);
+            }
+
+            //wprintf(L"Enumerating subkey: %s\n", fullSubKeyPath);
+
+            // Attempt to open this subkey directly before recursing
+            HKEY hTestKey;
+            LONG lTestResult = RegOpenKeyEx(hSubKey, subKeyName, 0, KEY_READ | READ_CONTROL | ACCESS_SYSTEM_SECURITY | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hTestKey);
+            if (lTestResult == ERROR_SUCCESS) {
+                //wprintf(L"Successfully opened subkey during enumeration: %s\n", fullSubKeyPath);
+
+                // Proceed with recursion only if the key is successfully opened
+                EnumerateRegistryKeys(hTestKey, L"", isSingleCheck);
+
+                RegCloseKey(hTestKey);
+            }
+            //else {
+                //wprintf(L"Failed to open subkey during enumeration: %s. lResult: %ld. Message: The system cannot find the file specified.\n", fullSubKeyPath, lTestResult);
+            //}
+
             subKeyNameSize = MAX_PATH;
             dwIndex++;
         }
@@ -251,11 +308,25 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck) {
         RegCloseKey(hSubKey);
     }
     else {
+        DWORD dwError = GetLastError();
         if (isSingleCheck) {
-            wprintf(L"Failed to open registry key: %s\n", subKey);
+            // Enhanced error logging with detailed message
+            LPVOID lpMsgBuf;
+            FormatMessage(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                NULL,
+                lResult,  // Use lResult instead of GetLastError
+                MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                (LPWSTR)&lpMsgBuf,
+                0, NULL);
+
+            wprintf(L"Failed to open registry key: %s. lResult: %ld. Message: %s\n", subKey, lResult, (LPWSTR)lpMsgBuf);
+            LocalFree(lpMsgBuf);
         }
     }
 }
+
+
 
 void EnumerateServices() {
     SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
@@ -346,7 +417,14 @@ int wmain(int argc, wchar_t* argv[]) {
         wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
         return 1;
     }
-
+    if (!EnablePrivilege(SE_BACKUP_NAME)) {
+        wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+        return 1;
+    }
+    if (!EnablePrivilege(SE_RESTORE_NAME)) {
+        wprintf(L"Failed to enable the SE_RESTORE_NAME privilege.\n");
+        return 1;
+    }
     if (argc < 2 || argc > 4) {
         wprintf(L"Usage: %s [option] [target]\n", argv[0]);
         wprintf(L"Options:\n");
@@ -359,22 +437,37 @@ int wmain(int argc, wchar_t* argv[]) {
     BOOL isSingleCheck = (argc == 3);
     BOOL isDirectoryCheck = (argc == 4 && wcscmp(argv[1], L"-f") == 0 && wcscmp(argv[3], L"-d") == 0);
 
+
     if (wcscmp(argv[1], L"-r") == 0) {
-        LPCWSTR subKey;
+        LPCWSTR subKey = NULL;
         HKEY hKey = GetRegistryHive(argv[2], &subKey);
 
         if (hKey == NULL) {
-            wprintf(L"Invalid registry hive specified in path.\n");
+            wprintf(L"Invalid registry hive specified in path: %s\n", argv[2]);
             return 1;
         }
 
-        HKEY hOpenedKey;
-        if (RegOpenKeyEx(hKey, subKey, 0, KEY_READ | READ_CONTROL | ACCESS_SYSTEM_SECURITY, &hOpenedKey) == ERROR_SUCCESS) {
-            CheckSACLForRegistryKey(hOpenedKey, subKey, TRUE);
-            RegCloseKey(hOpenedKey);
+        if (subKey == NULL || *subKey == L'\0') {
+            // Scan the entire registry hive
+            wprintf(L"Scanning entire registry hive: %s\n", argv[2]);
+            EnumerateRegistryKeys(hKey, L"", isSingleCheck);  // Start with an empty subKey for the root
         }
         else {
-            wprintf(L"Failed to open registry key: %s\n", argv[2]);
+            // Strip leading backslash if present
+            if (*subKey == L'\\') {
+                subKey++;
+            }
+
+            wprintf(L"Registry Hive: %p, SubKey: %s\n", hKey, subKey);
+
+            HKEY hOpenedKey;
+            if (RegOpenKeyEx(hKey, subKey, 0, KEY_READ | READ_CONTROL | ACCESS_SYSTEM_SECURITY | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hOpenedKey) == ERROR_SUCCESS) {
+                CheckSACLForRegistryKey(hOpenedKey, subKey, TRUE);
+                RegCloseKey(hOpenedKey);
+            }
+            else {
+                wprintf(L"Failed to open registry key: %s\n", argv[2]);
+            }
         }
     }
     else if (wcscmp(argv[1], L"-s") == 0) {
