@@ -19,32 +19,32 @@
 
 
 BOOL EnablePrivilege(LPCWSTR privilegeName) {
-	HANDLE hToken;
-	TOKEN_PRIVILEGES tp;
-	LUID luid;
+	HANDLE hToken;  // Process token handle
+	TOKEN_PRIVILEGES tp;  // Token privileges structure
+	LUID luid;  // Locally unique identifier for the privilege
 
-	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {  // Open the process token
 		wprintf(L"Failed to open process token. Error: %lu\n", GetLastError());
 		return FALSE;
 	}
 
-	if (!LookupPrivilegeValue(NULL, privilegeName, &luid)) {
+	if (!LookupPrivilegeValue(NULL, privilegeName, &luid)) {  // Lookup the privilege value
 		wprintf(L"Failed to lookup privilege value. Error: %lu\n", GetLastError());
 		CloseHandle(hToken);
 		return FALSE;
 	}
 
-	tp.PrivilegeCount = 1;
-	tp.Privileges[0].Luid = luid;
-	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	tp.PrivilegeCount = 1;  // Set the privilege count to 1
+	tp.Privileges[0].Luid = luid;  // Set the LUID
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;  // Enable the privilege
 
-	if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {
+	if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {  // Adjust the token privileges
 		wprintf(L"Failed to adjust token privileges. Error: %lu\n", GetLastError());
 		CloseHandle(hToken);
 		return FALSE;
 	}
 
-	if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+	if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {  // Check if the privilege is assigned
 		wprintf(L"The token does not have the specified privilege. Error: %lu\n", GetLastError());
 		CloseHandle(hToken);
 		return FALSE;
@@ -61,6 +61,7 @@ DEFINE_GUID(GUID_AllowedToActOnBehalfOfOtherIdentity, 0x9B026DA6, 0x0D3C, 0x465C
 #define RIGHT_DS_READ_PROPERTY   0x10
 #define RIGHT_DS_WRITE_PROPERTY  0x20
 
+// Function to print a hex dump of a buffer
 void PrintHexDump(const void* data, size_t size) {
 	const unsigned char* byteData = (const unsigned char*)data;
 	for (size_t i = 0; i < size; i++) {
@@ -70,13 +71,13 @@ void PrintHexDump(const void* data, size_t size) {
 	printf("\n");
 }
 
+// Function to calculate the SID start based on the flags in a SYSTEM_AUDIT_OBJECT_ACE
 PSID CalculateSidStart(SYSTEM_AUDIT_OBJECT_ACE* pAuditObjectAce) {
 	if (pAuditObjectAce->Flags == 0) {
 		// No flags set
-		return (PSID)((BYTE*)&pAuditObjectAce->ObjectType + sizeof(GUID));
+		return (PSID)((BYTE*)&pAuditObjectAce->ObjectType + sizeof(GUID));  // Default to ObjectType
 	}
-	else if ((pAuditObjectAce->Flags & ACE_OBJECT_TYPE_PRESENT) &&
-		(pAuditObjectAce->Flags & ACE_INHERITED_OBJECT_TYPE_PRESENT)) {
+	else if ((pAuditObjectAce->Flags & ACE_OBJECT_TYPE_PRESENT) &&  (pAuditObjectAce->Flags & ACE_INHERITED_OBJECT_TYPE_PRESENT)) {  // Both flags set
 		// Both ACE_OBJECT_TYPE_PRESENT and ACE_INHERITED_OBJECT_TYPE_PRESENT are set
 		return (PSID)((BYTE*)&pAuditObjectAce->InheritedObjectType + sizeof(GUID));
 	}
@@ -91,11 +92,12 @@ PSID CalculateSidStart(SYSTEM_AUDIT_OBJECT_ACE* pAuditObjectAce) {
 	return NULL; // Return NULL if no valid conditions are met
 }
 
+// Function to verify the SID structure
 void VerifySidStructure(PSID pSid, BOOL verbose) {
-	if (!IsValidSid(pSid)) {
+	if (!IsValidSid(pSid)) {  // Check if the SID is valid
 		printf("Invalid SID structure detected.\n");
 	}
-	else if (verbose) {
+	else if (verbose) {  // Print the SID structure if verbose flag is set
 		printf("SID is valid. Details:\n");
 		PrintHexDump(pSid, GetLengthSid(pSid));
 	}
@@ -103,8 +105,8 @@ void VerifySidStructure(PSID pSid, BOOL verbose) {
 
 // Function to retrieve the domain controller name
 BOOL GetDomainControllerName(WCHAR* domainController, DWORD size) {
-	PDOMAIN_CONTROLLER_INFO pDcInfo;
-	DWORD result = DsGetDcName(NULL, NULL, NULL, NULL, DS_DIRECTORY_SERVICE_REQUIRED, &pDcInfo);
+	PDOMAIN_CONTROLLER_INFO pDcInfo;  // Domain controller information
+	DWORD result = DsGetDcName(NULL, NULL, NULL, NULL, DS_DIRECTORY_SERVICE_REQUIRED, &pDcInfo);  // Get the domain controller name
 	if (result == NO_ERROR) {
 		wcsncpy_s(domainController, size, pDcInfo->DomainControllerName + 2, size - 1); // +2 skips "\\" prefix
 		NetApiBufferFree(pDcInfo);
@@ -116,6 +118,7 @@ BOOL GetDomainControllerName(WCHAR* domainController, DWORD size) {
 	}
 }
 
+// Function to resolve a SID to a user or group name
 void ResolveSidWithFallback(PSID pSid) {
 	WCHAR name[256];
 	WCHAR domain[256];
@@ -147,9 +150,10 @@ void ResolveSidWithFallback(PSID pSid) {
 	}
 }
 
+// Function to display ACE information
 void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 	if (isSingleCheck) {
-		if (pSACL == NULL || pSACL->AceCount == 0) {
+		if (pSACL == NULL || pSACL->AceCount == 0) {  // Check if the SACL is empty
 			wprintf(L"No SACL or empty SACL.\n");
 			return;
 		}
@@ -158,7 +162,7 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 	for (DWORD i = 0; i < pSACL->AceCount; i++) {
 		LPVOID pAce;
 		if (GetAce(pSACL, i, &pAce)) {
-			ACE_HEADER* aceHeader = (ACE_HEADER*)pAce;
+			ACE_HEADER* aceHeader = (ACE_HEADER*)pAce;  // Get the ACE header
 			PSID pSid = NULL;
 			// Skip inherited ACEs unless verbose flag is set
 			if ((aceHeader->AceFlags & INHERITED_ACE) && !verbose) {
@@ -336,22 +340,23 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 	}
 }
 
-
-void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
+// Check SACL for a file or directory
+void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {  
 	PSECURITY_DESCRIPTOR pSD = NULL;
 	BOOL bSaclPresent = FALSE;
 	BOOL bSaclDefaulted = FALSE;
 	PACL pSACL = NULL;
 	DWORD dwResult;
 
-	dwResult = GetNamedSecurityInfo(path, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
+	// Get the SACL for the file or directory
+	dwResult = GetNamedSecurityInfo(path, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);  
 
-	if (dwResult == ERROR_SUCCESS) {
-		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {
-			if (pSACL->AceCount != 0) {
+	if (dwResult == ERROR_SUCCESS) {  // Check if the SACL was retrieved successfully
+		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
+			if (pSACL->AceCount != 0) {  // Check if the SACL is empty
 				wprintf(L"SACL found on file/directory: %s\n", path);
 			}
-			DisplayAceInformation(pSACL, isSingleCheck, verbose);
+			DisplayAceInformation(pSACL, isSingleCheck, verbose);  // Display the ACE information
 		}
 		else {
 			if (isSingleCheck) {
@@ -367,6 +372,7 @@ void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
 	}
 }
 
+// Check SACL for a registry key
 BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL verbose) {
 	PSECURITY_DESCRIPTOR pSD = NULL;
 	DWORD dwSDSize = 0;
@@ -439,19 +445,18 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 	return TRUE;  // Safe to continue
 }
 
-
-
+// Check SACL for a service
 void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) {
-	SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-	if (hSCManager == NULL) {
+	SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);  // Open the Service Control Manager
+	if (hSCManager == NULL) {  // Check if the Service Control Manager was opened successfully
 		if (isSingleCheck) {
 			wprintf(L"Failed to open Service Control Manager. Error: %lu\n", GetLastError());
 		}
 		return;
 	}
 
-	SC_HANDLE hService = OpenService(hSCManager, serviceName, READ_CONTROL | ACCESS_SYSTEM_SECURITY);
-	if (hService == NULL) {
+	SC_HANDLE hService = OpenService(hSCManager, serviceName, READ_CONTROL | ACCESS_SYSTEM_SECURITY);  // Open the service
+	if (hService == NULL) {  // Check if the service was opened successfully
 		if (isSingleCheck) {
 			wprintf(L"Failed to open service: %s, Error: %lu\n", serviceName, GetLastError());
 		}
@@ -461,16 +466,16 @@ void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) 
 
 	PSECURITY_DESCRIPTOR pSD = NULL;
 	DWORD dwBytesNeeded = 0;
-	if (!QueryServiceObjectSecurity(hService, SACL_SECURITY_INFORMATION, pSD, 0, &dwBytesNeeded) && GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
-		pSD = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, dwBytesNeeded);
-		if (QueryServiceObjectSecurity(hService, SACL_SECURITY_INFORMATION, pSD, dwBytesNeeded, &dwBytesNeeded)) {
+	if (!QueryServiceObjectSecurity(hService, SACL_SECURITY_INFORMATION, pSD, 0, &dwBytesNeeded) && GetLastError() == ERROR_INSUFFICIENT_BUFFER) {  // Query the SACL size
+		pSD = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, dwBytesNeeded);  // Allocate memory for the security descriptor
+		if (QueryServiceObjectSecurity(hService, SACL_SECURITY_INFORMATION, pSD, dwBytesNeeded, &dwBytesNeeded)) {  // Query the SACL
 			BOOL bSaclPresent = FALSE;
 			BOOL bSaclDefaulted = FALSE;
 			PACL pSACL = NULL;
 
-			if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {
+			if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 				wprintf(L"SACL found on service: %s\n", serviceName);
-				DisplayAceInformation(pSACL, isSingleCheck, verbose);
+				DisplayAceInformation(pSACL, isSingleCheck, verbose);  // Display the ACE information
 			}
 			else if (isSingleCheck) {
 				wprintf(L"No SACL or empty SACL on service: %s\n", serviceName);
@@ -488,6 +493,7 @@ void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) 
 	CloseServiceHandle(hSCManager);
 }
 
+// Function to check the SACL for a specific Active Directory object
 HKEY GetRegistryHive(LPCWSTR path, LPCWSTR* subKey) {
 	if ((_wcsnicmp(path, L"HKEY_LOCAL_MACHINE\\", 18) == 0)) {
 		*subKey = path + 18;
@@ -514,7 +520,8 @@ HKEY GetRegistryHive(LPCWSTR path, LPCWSTR* subKey) {
 	}
 }
 
-void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL opsec, BOOL verbose) {
+// Enumerate registry keys
+void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL opsec, BOOL verbose) {  
 	HKEY hSubKey;
 	DWORD dwIndex = 0;
 	WCHAR subKeyName[MAX_PATH];
@@ -526,8 +533,7 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 	}
 	else {
 		// Open subkeys normally without prefixing with the hive name
-		LONG lResult = RegOpenKeyEx(hKey, subKey, 0,
-			KEY_READ | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hSubKey);
+		LONG lResult = RegOpenKeyEx(hKey, subKey, 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hSubKey);
 		if (lResult != ERROR_SUCCESS) {
 			if (verbose) {
 				wprintf(L"Failed to open registry key: %s\\%s. Error: %lu\n", displayPath, subKey, lResult);
@@ -539,7 +545,7 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 	HKEY hSaclKey;
 	if (RegOpenKeyEx(hSubKey, NULL, 0, READ_CONTROL | ACCESS_SYSTEM_SECURITY, &hSaclKey) == ERROR_SUCCESS) {
 		CheckSACLForRegistryKey(hSaclKey, displayPath, 1, verbose);
-		if (!CheckSACLForRegistryKey(hSubKey, displayPath, 0, verbose) && opsec) {     //////////////////// need to fix this so I only call this function once to meet both needs
+		if (!CheckSACLForRegistryKey(hSubKey, displayPath, 0, verbose) && opsec) { 
 			wprintf(L"Skipping subkeys under: %s due to sensitive SACL.\n", displayPath);
 			if (subKey && *subKey) RegCloseKey(hSubKey);
 			return;  // Stop recursion
@@ -590,14 +596,14 @@ void EnumerateServices(BOOL opsec, BOOL verbose) {
 	DWORD dwServicesReturned = 0;
 	DWORD dwResumeHandle = 0;
 
-	EnumServicesStatus(hSCManager, SERVICE_WIN32, SERVICE_STATE_ALL, NULL, 0, &dwBytesNeeded, &dwServicesReturned, &dwResumeHandle);
+	EnumServicesStatus(hSCManager, SERVICE_WIN32, SERVICE_STATE_ALL, NULL, 0, &dwBytesNeeded, &dwServicesReturned, &dwResumeHandle);  // Get the required buffer size
 
-	if (GetLastError() == ERROR_MORE_DATA) {
-		LPENUM_SERVICE_STATUS pServiceStatus = (LPENUM_SERVICE_STATUS)LocalAlloc(LPTR, dwBytesNeeded);
+	if (GetLastError() == ERROR_MORE_DATA) {  // Check if the buffer size is too small
+		LPENUM_SERVICE_STATUS pServiceStatus = (LPENUM_SERVICE_STATUS)LocalAlloc(LPTR, dwBytesNeeded);  // Allocate memory for the service status
 
-		if (EnumServicesStatus(hSCManager, SERVICE_WIN32, SERVICE_STATE_ALL, pServiceStatus, dwBytesNeeded, &dwBytesNeeded, &dwServicesReturned, &dwResumeHandle)) {
-			for (DWORD i = 0; i < dwServicesReturned; i++) {
-				CheckSACLForService(pServiceStatus[i].lpServiceName, FALSE, verbose);
+		if (EnumServicesStatus(hSCManager, SERVICE_WIN32, SERVICE_STATE_ALL, pServiceStatus, dwBytesNeeded, &dwBytesNeeded, &dwServicesReturned, &dwResumeHandle)) {  // Enumerate the services
+			for (DWORD i = 0; i < dwServicesReturned; i++) {  // Loop through each service
+				CheckSACLForService(pServiceStatus[i].lpServiceName, FALSE, verbose);  // Check the SACL for the service
 			}
 		}
 
@@ -673,9 +679,6 @@ void EnumerateFilesInDirectory(LPCWSTR directory, BOOL verbose) {
 
 	FindClose(hFind);
 }
-
-
-BOOL GetSACLFromADObject(LPCWSTR objectName);
 
 // Modified GetSACLFromADObject function to retrieve and display the SACL
 BOOL GetSACLFromADObject(LPCWSTR objectName, BOOL verbose) {
@@ -762,9 +765,7 @@ BOOL GetSACLFromADObject(LPCWSTR objectName, BOOL verbose) {
 	return TRUE;
 }
 
-
-
-// Main enumeration function
+// Main AD enumeration function
 BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose) {
 	IDispatch* pDisp = NULL;
 	IADsContainer* pContainer = NULL;
