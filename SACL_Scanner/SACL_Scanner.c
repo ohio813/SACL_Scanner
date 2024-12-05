@@ -8,6 +8,7 @@
 #include <activeds.h>
 #include <objbase.h>
 #include <initguid.h>
+#include "guid_lookup.h"
 
 
 #pragma comment(lib, "advapi32.lib")
@@ -16,7 +17,6 @@
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "Oleaut32.lib")
 #pragma comment(lib, "Netapi32.lib")
-
 
 BOOL EnablePrivilege(LPCWSTR privilegeName) {
 	HANDLE hToken;  // Process token handle
@@ -54,9 +54,6 @@ BOOL EnablePrivilege(LPCWSTR privilegeName) {
 	return TRUE;
 }
 
-// Define GUIDs for specific attribute-based permissions
-DEFINE_GUID(GUID_KeyCredentialLink, 0x5B47D60F, 0x6090, 0x40B2, 0x9F, 0x37, 0x2A, 0x4D, 0xE8, 0x8F, 0x30, 0x63);
-DEFINE_GUID(GUID_AllowedToActOnBehalfOfOtherIdentity, 0x9B026DA6, 0x0D3C, 0x465C, 0x8D, 0x55, 0xED, 0x74, 0x29, 0x4C, 0xA7, 0xB9);
 // Define specific access rights for reading and writing properties
 #define RIGHT_DS_READ_PROPERTY   0x10
 #define RIGHT_DS_WRITE_PROPERTY  0x20
@@ -77,7 +74,7 @@ PSID CalculateSidStart(SYSTEM_AUDIT_OBJECT_ACE* pAuditObjectAce) {
 		// No flags set
 		return (PSID)((BYTE*)&pAuditObjectAce->ObjectType + sizeof(GUID));  // Default to ObjectType
 	}
-	else if ((pAuditObjectAce->Flags & ACE_OBJECT_TYPE_PRESENT) &&  (pAuditObjectAce->Flags & ACE_INHERITED_OBJECT_TYPE_PRESENT)) {  // Both flags set
+	else if ((pAuditObjectAce->Flags & ACE_OBJECT_TYPE_PRESENT) && (pAuditObjectAce->Flags & ACE_INHERITED_OBJECT_TYPE_PRESENT)) {  // Both flags set
 		// Both ACE_OBJECT_TYPE_PRESENT and ACE_INHERITED_OBJECT_TYPE_PRESENT are set
 		return (PSID)((BYTE*)&pAuditObjectAce->InheritedObjectType + sizeof(GUID));
 	}
@@ -107,13 +104,14 @@ void VerifySidStructure(PSID pSid, BOOL verbose) {
 BOOL GetDomainControllerName(WCHAR* domainController, DWORD size) {
 	PDOMAIN_CONTROLLER_INFO pDcInfo;  // Domain controller information
 	DWORD result = DsGetDcName(NULL, NULL, NULL, NULL, DS_DIRECTORY_SERVICE_REQUIRED, &pDcInfo);  // Get the domain controller name
-	if (result == NO_ERROR) {
+	if (result == NO_ERROR) {  // Check if the domain controller name was retrieved successfully
+		// Copy the domain controller name to the output buffer
 		wcsncpy_s(domainController, size, pDcInfo->DomainControllerName + 2, size - 1); // +2 skips "\\" prefix
-		NetApiBufferFree(pDcInfo);
+		NetApiBufferFree(pDcInfo); // Free the domain controller information buffer
 		return TRUE;
 	}
 	else {
-		printf(L"Failed to retrieve domain controller name. Error: %lu\n", result);
+		wprintf(L"Failed to retrieve domain controller name. Error: %lu\n", result);
 		return FALSE;
 	}
 }
@@ -147,6 +145,32 @@ void ResolveSidWithFallback(PSID pSid) {
 	}
 	else {
 		wprintf(L"Domain controller not found; cannot resolve domain SID.\n");
+	}
+}
+
+void ProcessGUIDFromAce(const GUID* objectType, DWORD accessMask, BOOL verbose) {
+	if (verbose) {
+		printf("Debug: Looking up GUID: %08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
+			objectType->Data1, objectType->Data2, objectType->Data3,
+			objectType->Data4[0], objectType->Data4[1], objectType->Data4[2], objectType->Data4[3],
+			objectType->Data4[4], objectType->Data4[5], objectType->Data4[6], objectType->Data4[7]);
+	}
+
+	struct GuidLookup* entry = in_word_set(objectType);
+	if (entry) {
+		wprintf(L"  Auditing: %hs\n", entry->name);
+		if (accessMask & RIGHT_DS_READ_PROPERTY) {
+			wprintf(L"    Auditing Read Access\n");
+		}
+		if (accessMask & RIGHT_DS_WRITE_PROPERTY) {
+			wprintf(L"    Auditing Write Access\n");
+		}
+	}
+	else {
+		printf("  Unknown GUID: %08x-%04x-%04x-%02x%02x-%02x%02x-%02x%02x%02x%02x\n",
+			objectType->Data1, objectType->Data2, objectType->Data3,
+			objectType->Data4[0], objectType->Data4[1], objectType->Data4[2], objectType->Data4[3],
+			objectType->Data4[4], objectType->Data4[5], objectType->Data4[6], objectType->Data4[7]);
 	}
 }
 
@@ -277,7 +301,7 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 
 			}
 			// Check for GUID-based SYSTEM_AUDIT_OBJECT_ACE_TYPE for attribute-specific rights
-			
+
 			else if (aceHeader->AceType == SYSTEM_AUDIT_OBJECT_ACE_TYPE) {
 				SYSTEM_AUDIT_OBJECT_ACE* pAuditObjectAce = (SYSTEM_AUDIT_OBJECT_ACE*)pAce;
 				// Determine SidStart dynamically based on Flags
@@ -296,25 +320,7 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 				wprintf(L"Processing SYSTEM_AUDIT_OBJECT_ACE_TYPE ACE.\n");
 
 				if (!IsEqualGUID(&pAuditObjectAce->ObjectType, &GUID_NULL)) {
-					// Check for specific known GUIDs and provide detailed output
-					if (IsEqualGUID(&pAuditObjectAce->ObjectType, &GUID_KeyCredentialLink)) {
-						wprintf(L"  Auditing: msDS-KeyCredentialLink (GUID_KeyCredentialLink)\n");
-						// Check if auditing read access
-						if (pAuditObjectAce->Mask & RIGHT_DS_READ_PROPERTY) {
-							wprintf(L"    Auditing Read Access\n");
-						}
-
-						// Check if auditing write access
-						if (pAuditObjectAce->Mask & RIGHT_DS_WRITE_PROPERTY) {
-							wprintf(L"    Auditing Write Access\n");
-						}
-					}
-					else {
-						// Output any GUIDs that don’t match expected values for further troubleshooting
-						OLECHAR guidString[40];
-						StringFromGUID2(&(pAuditObjectAce->ObjectType), guidString, 40);
-						wprintf(L"  Unknown GUID found: %s\n", guidString);
-					}
+					ProcessGUIDFromAce(&pAuditObjectAce->ObjectType, pAuditObjectAce->Mask, verbose);
 				}
 				else {
 					wprintf(L"  No specific ObjectType GUID (GUID_NULL).\n");
@@ -341,7 +347,7 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 }
 
 // Check SACL for a file or directory
-void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {  
+void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
 	PSECURITY_DESCRIPTOR pSD = NULL;
 	BOOL bSaclPresent = FALSE;
 	BOOL bSaclDefaulted = FALSE;
@@ -349,7 +355,7 @@ void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
 	DWORD dwResult;
 
 	// Get the SACL for the file or directory
-	dwResult = GetNamedSecurityInfo(path, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);  
+	dwResult = GetNamedSecurityInfo(path, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
 
 	if (dwResult == ERROR_SUCCESS) {  // Check if the SACL was retrieved successfully
 		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
@@ -493,6 +499,111 @@ void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) 
 	CloseServiceHandle(hSCManager);
 }
 
+// Function to check if any SID in the current user's token matches the SIDs in the SACL
+BOOL CheckDirectorySACL(LPCWSTR directory, BOOL verbose) {
+	PSECURITY_DESCRIPTOR pSD = NULL;
+	PACL pSACL = NULL;
+	BOOL saclPresent = FALSE;
+	BOOL saclDefaulted = FALSE;
+
+	// Get the SACL of the directory
+	DWORD result = GetNamedSecurityInfoW(
+		directory,
+		SE_FILE_OBJECT,
+		SACL_SECURITY_INFORMATION,
+		NULL,
+		NULL,
+		NULL,
+		&pSACL,
+		&pSD
+	);
+
+	if (result != ERROR_SUCCESS) {
+		if (verbose) {
+			wprintf(L"Failed to retrieve SACL for directory: %s (Error: %lu)\n", directory, result);
+		}
+		return FALSE; // Assume no SACL triggers
+	}
+
+	if (GetSecurityDescriptorSacl(pSD, &saclPresent, &pSACL, &saclDefaulted) && saclPresent) {  // Check if the SACL is present
+		wprintf(L"SACL found on directory: %s\n", directory);
+	}
+
+	// Check if SACL is present
+	if (!saclPresent || !pSACL) {
+		if (verbose) {
+			wprintf(L"No SACL present for directory: %s\n", directory);
+		}
+		LocalFree(pSD);
+		return FALSE; // No SACL means no triggers
+	}
+
+	// Open the current process token
+	HANDLE hToken = NULL;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+		if (verbose) {
+			wprintf(L"Failed to open process token. Error: %lu\n", GetLastError());
+		}
+		LocalFree(pSD);
+		return FALSE; // Assume safe if we can't retrieve the token
+	}
+
+	// Retrieve the token groups (SIDs) from the token
+	DWORD tokenInfoLength = 0;
+	GetTokenInformation(hToken, TokenGroups, NULL, 0, &tokenInfoLength);
+	PTOKEN_GROUPS pTokenGroups = (PTOKEN_GROUPS)malloc(tokenInfoLength);
+
+	if (pTokenGroups == NULL ||
+		!GetTokenInformation(hToken, TokenGroups, pTokenGroups, tokenInfoLength, &tokenInfoLength)) {
+		if (verbose) {
+			wprintf(L"Failed to retrieve token groups. Error: %lu\n", GetLastError());
+		}
+		CloseHandle(hToken);
+		LocalFree(pSD);
+		if (pTokenGroups) free(pTokenGroups);
+		return FALSE; // Assume safe if we can't retrieve token groups
+	}
+
+	// Iterate over the ACEs in the SACL
+	for (DWORD i = 0; i < pSACL->AceCount; i++) {
+		LPVOID pAce = NULL;
+		if (GetAce(pSACL, i, &pAce)) {
+			PACE_HEADER pAceHeader = (PACE_HEADER)pAce;
+
+			// Check if it's a SYSTEM_AUDIT_ACE
+			if (pAceHeader->AceType == SYSTEM_AUDIT_ACE_TYPE) {
+				PSYSTEM_AUDIT_ACE pAuditAce = (PSYSTEM_AUDIT_ACE)pAce;
+
+				// Extract the SID from the ACE
+				PSID pAceSID = (PSID)&pAuditAce->SidStart;
+
+				// Compare the ACE SID with each SID in the token
+				for (DWORD j = 0; j < pTokenGroups->GroupCount; j++) {
+					PSID pTokenSID = pTokenGroups->Groups[j].Sid;
+
+					// Check if the SIDs match
+					if (EqualSid(pAceSID, pTokenSID)) {
+						wprintf(L"Detected matching SID in SACL for directory: %s\n", directory);
+						DisplayAceInformation(pSACL, TRUE, verbose);  // Display the ACE information
+
+						// Free resources and return TRUE to indicate a potential SACL trigger
+						free(pTokenGroups);
+						CloseHandle(hToken);
+						LocalFree(pSD);
+						return TRUE; // Trigger detected
+					}
+				}
+			}
+		}
+	}
+
+	// Free resources and return FALSE (no trigger detected)
+	free(pTokenGroups);
+	CloseHandle(hToken);
+	LocalFree(pSD);
+	return FALSE;
+}
+
 // Function to check the SACL for a specific Active Directory object
 HKEY GetRegistryHive(LPCWSTR path, LPCWSTR* subKey) {
 	if ((_wcsnicmp(path, L"HKEY_LOCAL_MACHINE\\", 18) == 0)) {
@@ -521,7 +632,7 @@ HKEY GetRegistryHive(LPCWSTR path, LPCWSTR* subKey) {
 }
 
 // Enumerate registry keys
-void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL opsec, BOOL verbose) {  
+void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL opsec, BOOL verbose) {
 	HKEY hSubKey;
 	DWORD dwIndex = 0;
 	WCHAR subKeyName[MAX_PATH];
@@ -545,7 +656,7 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 	HKEY hSaclKey;
 	if (RegOpenKeyEx(hSubKey, NULL, 0, READ_CONTROL | ACCESS_SYSTEM_SECURITY, &hSaclKey) == ERROR_SUCCESS) {
 		CheckSACLForRegistryKey(hSaclKey, displayPath, 1, verbose);
-		if (!CheckSACLForRegistryKey(hSubKey, displayPath, 0, verbose) && opsec) { 
+		if (!CheckSACLForRegistryKey(hSubKey, displayPath, 0, verbose) && opsec) {
 			wprintf(L"Skipping subkeys under: %s due to sensitive SACL.\n", displayPath);
 			if (subKey && *subKey) RegCloseKey(hSubKey);
 			return;  // Stop recursion
@@ -585,7 +696,7 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 }
 
 
-void EnumerateServices(BOOL opsec, BOOL verbose) {
+void EnumerateServices(BOOL verbose) {
 	SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
 	if ((hSCManager == NULL) && verbose) {
 		wprintf(L"Failed to open Service Control Manager. Error: %lu\n", GetLastError());
@@ -619,6 +730,16 @@ void EnumerateFiles(LPCWSTR directory, BOOL opsec, BOOL verbose) {
 
 	WCHAR directoryPath[MAX_PATH];
 	swprintf(directoryPath, MAX_PATH, L"%s\\*", directory);
+
+	// Check the directory SACL if the opsec flag is enabled
+	if (opsec) {
+		if (CheckDirectorySACL(directory, verbose)) {
+			if (verbose) {
+				wprintf(L"Skipping directory due to SACL auditing: %s\n", directory);
+			}
+			return;
+		}
+	}
 
 	hFind = FindFirstFile(directoryPath, &findFileData);
 
@@ -655,12 +776,20 @@ void EnumerateFiles(LPCWSTR directory, BOOL opsec, BOOL verbose) {
 	FindClose(hFind);
 }
 
-void EnumerateFilesInDirectory(LPCWSTR directory, BOOL verbose) {
+void EnumerateFilesInDirectory(LPCWSTR directory, BOOL opsec, BOOL verbose) {
 	WIN32_FIND_DATA findFileData;
 	HANDLE hFind = INVALID_HANDLE_VALUE;
 
 	WCHAR directoryPath[MAX_PATH];
 	swprintf(directoryPath, MAX_PATH, L"%s\\*", directory);
+
+	// Check the directory SACL if the opsec flag is enabled
+	if (opsec) {
+		if (CheckDirectorySACL(directory, verbose)) {
+			wprintf(L"Skipping directory due to SACL auditing: %s\n", directory);
+			return;
+		}
+	}
 
 	hFind = FindFirstFile(directoryPath, &findFileData);
 
@@ -673,7 +802,7 @@ void EnumerateFilesInDirectory(LPCWSTR directory, BOOL verbose) {
 		if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
 			WCHAR fullPath[MAX_PATH];
 			swprintf(fullPath, MAX_PATH, L"%s\\%s", directory, findFileData.cFileName);
-			CheckSACLForFile(fullPath, FALSE, verbose);
+			CheckSACLForFile(fullPath, TRUE, verbose);
 		}
 	} while (FindNextFile(hFind, &findFileData) != 0);
 
@@ -781,6 +910,7 @@ BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose) {
 	hr = ADsOpenObject(ldapPath, NULL, NULL, ADS_SECURE_AUTHENTICATION, &IID_IDispatch, (void**)&pDisp);
 	if (FAILED(hr)) {
 		wprintf(L"Failed to bind to LDAP path %ls. Error: 0x%x\n", ldapPath, hr);
+		wprintf(L"        Expected Format: \"LDAP://CN=username,CN=Users,DC=contoso,DC=local\"\n");
 		CoUninitialize();
 		return FALSE;
 	}
@@ -791,10 +921,10 @@ BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose) {
 		// Try enumerating to see if there are any child objects
 		hr = ADsBuildEnumerator(pContainer, &pEnum);
 		if (FAILED(hr) || ADsEnumerateNext(pEnum, 1, &var, &lFetch) != S_OK) {
-			// If enumeration fails or finds no children, treat as single object
 			if (verbose) {
 				wprintf(L"Failed to enumerate child objects for container: %ls\n", ldapPath);
 			}
+			// If enumeration fails or finds no children, treat as single object
 			GetSACLFromADObject(ldapPath, verbose);
 
 			// Clean up and release resources
@@ -860,7 +990,20 @@ BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose) {
 	return TRUE;
 }
 
-
+void HelpMenu() {
+	wprintf(L"Usage: SACL_Scanner.exe [option] [target]\n");
+	wprintf(L"Options:\n");
+	wprintf(L"  -r  : Check all registry keys in a hive or a specific registry key\n");
+	wprintf(L"        Expected Hive Format: HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG\n");
+	wprintf(L"  -s  : Check all services or a specific service\n");
+	wprintf(L"  -f  : Check all files and directories, a specific file/directory, or only files in a specific directory (with -d)\n");
+	wprintf(L"  -d  : Check all files in a specific directory\n");
+	wprintf(L"  -a  : Check objects in an Active Directory path\n");
+	wprintf(L"        Expected Format: \"LDAP://CN=username,CN=Users,DC=contoso,DC=local\"\n");
+	wprintf(L"  -recursive : Enable recursive mode for Active Directory\n");
+	wprintf(L"  -opsec : Enable OPSEC safe mode\n");
+	wprintf(L"  -v  : Enable verbose mode\n");
+}
 
 int wmain(int argc, wchar_t* argv[]) {
 	LPCWSTR hiveName = NULL;
@@ -891,16 +1034,7 @@ int wmain(int argc, wchar_t* argv[]) {
 		return 1;
 	}
 	if (argc < 2 || argc > 5) {
-		wprintf(L"Usage: %s [option] [target]\n", argv[0]);
-		wprintf(L"Options:\n");
-		wprintf(L"  -r  : Check all registry keys in a hive or a specific registry key\n");
-		wprintf(L"        Expected Hive Format: HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG\n");
-		wprintf(L"  -s  : Check all services or a specific service\n");
-		wprintf(L"  -f  : Check all files and directories, a specific file/directory, or only files in a specific directory (with -d)\n");
-		wprintf(L"  -d  : Check all files in a specific directory\n");
-		wprintf(L"  -a  : Check objects in an Active Directory path\n");
-		wprintf(L"  -opsec : Enable OPSEC safe mode\n");
-		wprintf(L"  -v  : Enable verbose mode\n");
+		HelpMenu();
 		return 1;
 	}
 	// Loop through arguments to identify flags and parameters
@@ -925,7 +1059,6 @@ int wmain(int argc, wchar_t* argv[]) {
 		else if (_wcsicmp(argv[i], L"-f") == 0) {
 			fileMode = TRUE;  // Set mode to file
 			if (i + 1 < argc) {  // Check for an argument after "-f"
-				isSingleCheck = TRUE;
 				fileName = argv[++i];  // Get the file name immediately following "-f"
 			}
 		}
@@ -951,8 +1084,13 @@ int wmain(int argc, wchar_t* argv[]) {
 		else if (_wcsicmp(argv[i], L"-v") == 0) {
 			verboseMode = TRUE;  // Enable verbose mode
 		}
+		else if (_wcsicmp(argv[i], L"-h") == 0) {
+			HelpMenu();
+			return 1;
+		}
 		else {
 			wprintf(L"Unknown argument: %s\n", argv[i]);
+			HelpMenu();
 			return 1;
 		}
 	}
@@ -996,21 +1134,19 @@ int wmain(int argc, wchar_t* argv[]) {
 		else {
 			// Check all services
 			wprintf(L"Checking all services...\n");
-			EnumerateServices(opsec, verboseMode);
+			EnumerateServices(verboseMode);
 		}
 	}
 	else if (fileMode) {
 
-		if (isSingleCheck) {
-			// Check specific file or directory
-			CheckSACLForFile(fileName, TRUE, verboseMode);
-		}
+		// Check specific file or directory
+		CheckSACLForFile(fileName, TRUE, verboseMode);
 
 	}
 	else if (directoryMode) {
 		if (isSingleCheck) {
 			// Check only files in a specific directory
-			EnumerateFilesInDirectory(directory, verboseMode);
+			EnumerateFilesInDirectory(directory, opsec, verboseMode);
 		}
 		else {
 			// Check all files and directories
@@ -1019,6 +1155,7 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 	}
 	else if (activeDirectoryMode) {
+		//PrintHashTable();
 		EnumerateAndRetrieveSACLs(ldapPath, recurse, verboseMode);
 	}
 	else {
