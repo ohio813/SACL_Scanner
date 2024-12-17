@@ -397,7 +397,7 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 			if (isSingleCheck) {
 				wprintf(L"Failed to allocate memory for security descriptor.\n");
 			}
-			return TRUE;  // Return TRUE to continue recursion, as we couldn’t retrieve the SACL
+			return TRUE;  // Return TRUE to continue recursion, as we couldnÂ’t retrieve the SACL
 		}
 
 		// Second call to RegGetKeySecurity with the allocated buffer
@@ -1155,7 +1155,6 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 	}
 	else if (activeDirectoryMode) {
-		//PrintHashTable();
 		EnumerateAndRetrieveSACLs(ldapPath, recurse, verboseMode);
 	}
 	else {
