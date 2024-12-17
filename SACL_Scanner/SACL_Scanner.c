@@ -1026,7 +1026,7 @@ int wmain(int argc, wchar_t* argv[]) {
 		return 1;
 	}
 	if (!EnablePrivilege(SE_BACKUP_NAME)) {
-		wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+		wprintf(L"Failed to enable the SE_BACKUP_NAME privilege.\n");
 		return 1;
 	}
 	if (!EnablePrivilege(SE_RESTORE_NAME)) {
