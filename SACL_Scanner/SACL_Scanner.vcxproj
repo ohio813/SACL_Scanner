@@ -130,7 +130,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="guid_lookup.c" />
     <ClCompile Include="SACL_Scanner.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="guid_lookup.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

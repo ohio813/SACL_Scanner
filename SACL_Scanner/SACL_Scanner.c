@@ -507,16 +507,7 @@ BOOL CheckDirectorySACL(LPCWSTR directory, BOOL verbose) {
 	BOOL saclDefaulted = FALSE;
 
 	// Get the SACL of the directory
-	DWORD result = GetNamedSecurityInfoW(
-		directory,
-		SE_FILE_OBJECT,
-		SACL_SECURITY_INFORMATION,
-		NULL,
-		NULL,
-		NULL,
-		&pSACL,
-		&pSD
-	);
+	DWORD result = GetNamedSecurityInfoW(directory, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
 
 	if (result != ERROR_SUCCESS) {
 		if (verbose) {
@@ -833,16 +824,7 @@ BOOL GetSACLFromADObject(LPCWSTR objectName, BOOL verbose) {
 	}
 
 	// Retrieve the security descriptor using GetNamedSecurityInfo
-	DWORD result = GetNamedSecurityInfoW(
-		objectName,
-		SE_DS_OBJECT_ALL,
-		SACL_SECURITY_INFORMATION,
-		NULL,
-		NULL,
-		NULL,
-		&pSACL,
-		&pSD
-	);
+	DWORD result = GetNamedSecurityInfoW(objectName, SE_DS_OBJECT_ALL, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
 
 	if (result != ERROR_SUCCESS) {
 		if (verbose) {
@@ -1021,18 +1003,6 @@ int wmain(int argc, wchar_t* argv[]) {
 	BOOL isSingleCheck = FALSE;
 	BOOL verboseMode = FALSE;
 
-	if (!EnablePrivilege(SE_SECURITY_NAME)) {
-		wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
-		return 1;
-	}
-	if (!EnablePrivilege(SE_BACKUP_NAME)) {
-		wprintf(L"Failed to enable the SE_BACKUP_NAME privilege.\n");
-		return 1;
-	}
-	if (!EnablePrivilege(SE_RESTORE_NAME)) {
-		wprintf(L"Failed to enable the SE_RESTORE_NAME privilege.\n");
-		return 1;
-	}
 	if (argc < 2 || argc > 5) {
 		HelpMenu();
 		return 1;
@@ -1064,7 +1034,7 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 		else if (_wcsicmp(argv[i], L"-d") == 0) {
 			directoryMode = TRUE;
-			if (i + 1 < argc) {  // Check for an argument after "-f"
+			if (i + 1 < argc) {  // Check for an argument after "-d"
 				isSingleCheck = TRUE;
 				directory = argv[++i];  // Get the directory name immediately following "-d"
 			}
@@ -1096,6 +1066,10 @@ int wmain(int argc, wchar_t* argv[]) {
 	}
 
 	if (registryMode) {
+		if (!EnablePrivilege(SE_SECURITY_NAME)) {
+			wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+			return 1;
+		}
 		LPCWSTR subKey = NULL;
 		HKEY hKey = GetRegistryHive(hiveName, &subKey);
 
@@ -1127,6 +1101,10 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 	}
 	else if (serviceMode) {
+		if (!EnablePrivilege(SE_SECURITY_NAME)) {
+			wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+			return 1;
+		}
 		if (isSingleCheck) {
 			// Check specific service
 			CheckSACLForService(service, TRUE, verboseMode);
@@ -1138,12 +1116,19 @@ int wmain(int argc, wchar_t* argv[]) {
 		}
 	}
 	else if (fileMode) {
-
+		if (!EnablePrivilege(SE_SECURITY_NAME)) {
+			wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+			return 1;
+		}
 		// Check specific file or directory
 		CheckSACLForFile(fileName, TRUE, verboseMode);
 
 	}
 	else if (directoryMode) {
+		if (!EnablePrivilege(SE_SECURITY_NAME)) {
+			wprintf(L"Failed to enable the SE_SECURITY_NAME privilege.\n");
+			return 1;
+		}
 		if (isSingleCheck) {
 			// Check only files in a specific directory
 			EnumerateFilesInDirectory(directory, opsec, verboseMode);

@@ -18,5 +18,13 @@
     <ClCompile Include="SACL_Scanner.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="guid_lookup.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="guid_lookup.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
