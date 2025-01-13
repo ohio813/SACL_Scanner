@@ -175,8 +175,8 @@ void ProcessGUIDFromAce(const GUID* objectType, DWORD accessMask, BOOL verbose) 
 }
 
 // Function to display ACE information
-void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
-	if (isSingleCheck) {
+void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose, BOOL reg) {
+	if (isSingleCheck && verbose) {
 		if (pSACL == NULL || pSACL->AceCount == 0) {  // Check if the SACL is empty
 			wprintf(L"No SACL or empty SACL.\n");
 			return;
@@ -255,6 +255,16 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose) {
 				}
 				else {
 					wprintf(L"SACL Entry %d: SID not found or invalid.\n", i + 1);
+				}
+
+				if (reg) {
+					if (pAuditAce->Mask & KEY_QUERY_VALUE)		wprintf(L"  Auditing: Query Value\n");
+					if (pAuditAce->Mask & KEY_SET_VALUE)		wprintf(L"  Auditing: Set Value\n");
+					if (pAuditAce->Mask & KEY_CREATE_SUB_KEY)	wprintf(L"  Auditing: Create Subkey\n");
+					if (pAuditAce->Mask & KEY_ENUMERATE_SUB_KEYS)	wprintf(L"  Auditing: Enumerate Subkeys\n");
+					if (pAuditAce->Mask & KEY_NOTIFY)			wprintf(L"  Auditing: Notify\n");
+					if (pAuditAce->Mask & KEY_CREATE_LINK)		wprintf(L"  Auditing: Create Link\n");
+					break;
 				}
 
 				// List all possible rights
@@ -356,13 +366,15 @@ void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
 
 	// Get the SACL for the file or directory
 	dwResult = GetNamedSecurityInfo(path, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
-
+	if (verbose) {
+		wprintf(L"Checking: %s\n", path);
+	}
 	if (dwResult == ERROR_SUCCESS) {  // Check if the SACL was retrieved successfully
 		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 			if (pSACL->AceCount != 0) {  // Check if the SACL is empty
 				wprintf(L"SACL found on file/directory: %s\n", path);
 			}
-			DisplayAceInformation(pSACL, isSingleCheck, verbose);  // Display the ACE information
+			DisplayAceInformation(pSACL, isSingleCheck, verbose, FALSE);  // Display the ACE information
 		}
 		else {
 			if (isSingleCheck) {
@@ -379,7 +391,7 @@ void CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose) {
 }
 
 // Check SACL for a registry key
-BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL verbose) {
+BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL verbose, BOOL opsec) {
 	PSECURITY_DESCRIPTOR pSD = NULL;
 	DWORD dwSDSize = 0;
 	DWORD dwResult;
@@ -411,35 +423,79 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 				wprintf(L"SACL found on registry key: %s\n", subKey);
 
 				if (isSingleCheck) {
-					DisplayAceInformation(pSACL, isSingleCheck, verbose);
+					DisplayAceInformation(pSACL, isSingleCheck, verbose, TRUE);
 				}
+			}
+			else if (isSingleCheck && verbose) {
+				wprintf(L"No SACL or empty SACL on registry key: %s\n", subKey);
+			}
+		}
+		// Check if SACL is present
+		if (!bSaclPresent || !pSACL) {
+			LocalFree(pSD);
+			return FALSE; // No SACL means no triggers
+		}
+		if (opsec) {
+			// Open the current process token
+			HANDLE hToken = NULL;
+			if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+				if (verbose) {
+					wprintf(L"Failed to open process token. Error: %lu\n", GetLastError());
+				}
+				LocalFree(pSD);
+				return FALSE; // Assume safe if we can't retrieve the token
+			}
 
-				// Check each ACE in the SACL for auditing triggers
-				for (DWORD i = 0; i < pSACL->AceCount; i++) {
-					LPVOID pAce;
-					if (GetAce(pSACL, i, &pAce)) {
-						ACE_HEADER* aceHeader = (ACE_HEADER*)pAce;
+			// Retrieve the token groups (SIDs) from the token
+			DWORD tokenInfoLength = 0;
+			GetTokenInformation(hToken, TokenGroups, NULL, 0, &tokenInfoLength);
+			PTOKEN_GROUPS pTokenGroups = (PTOKEN_GROUPS)malloc(tokenInfoLength);
 
-						if (aceHeader->AceType == SYSTEM_AUDIT_ACE_TYPE) {
-							SYSTEM_AUDIT_ACE* pAuditAce = (SYSTEM_AUDIT_ACE*)pAce;
+			if (pTokenGroups == NULL ||
+				!GetTokenInformation(hToken, TokenGroups, pTokenGroups, tokenInfoLength, &tokenInfoLength)) {
+				if (verbose) {
+					wprintf(L"Failed to retrieve token groups. Error: %lu\n", GetLastError());
+				}
+				CloseHandle(hToken);
+				LocalFree(pSD);
+				if (pTokenGroups) free(pTokenGroups);
+				return FALSE; // Assume safe if we can't retrieve token groups
+			}
+			// Iterate over the ACEs in the SACL
+			for (DWORD i = 0; i < pSACL->AceCount; i++) {
+				LPVOID pAce = NULL;
+				if (GetAce(pSACL, i, &pAce)) {
+					PACE_HEADER pAceHeader = (PACE_HEADER)pAce;
 
-							// Check if this ACE would trigger auditing on access
-							if (pAuditAce->Mask & (KEY_READ | KEY_ENUMERATE_SUB_KEYS)) {
-								wprintf(L"Sensitive SACL detected on key: %s. Stopping recursion.\n", subKey);
-								free(pSD);
-								return FALSE;  // Sensitive SACL detected; stop recursion
+					// Check if it's a SYSTEM_AUDIT_ACE
+					if (pAceHeader->AceType == SYSTEM_AUDIT_ACE_TYPE) {
+						PSYSTEM_AUDIT_ACE pAuditAce = (PSYSTEM_AUDIT_ACE)pAce;
+
+						// Extract the SID from the ACE
+						PSID pAceSID = (PSID)&pAuditAce->SidStart;
+
+						// Compare the ACE SID with each SID in the token
+						for (DWORD j = 0; j < pTokenGroups->GroupCount; j++) {
+							PSID pTokenSID = pTokenGroups->Groups[j].Sid;
+
+							// Check if the SIDs match
+							if (EqualSid(pAceSID, pTokenSID)) {
+								wprintf(L"Detected matching SID in SACL for key: %s\n", subKey);
+
+								// Free resources and return TRUE to indicate a potential SACL trigger
+								free(pTokenGroups);
+								CloseHandle(hToken);
+								LocalFree(pSD);
+								return TRUE; // Trigger detected
 							}
 						}
 					}
 				}
 			}
-			else if (isSingleCheck) {
-				wprintf(L"No SACL or empty SACL on registry key: %s\n", subKey);
-			}
 		}
 	}
 	else {
-		if (isSingleCheck) {
+		if (isSingleCheck && verbose) {
 			wprintf(L"Failed to retrieve SACL for registry key: %s, Error: %lu\n", subKey, dwResult);
 		}
 	}
@@ -448,7 +504,7 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 		free(pSD);
 	}
 
-	return TRUE;  // Safe to continue
+	return FALSE;  // Safe to continue
 }
 
 // Check SACL for a service
@@ -481,7 +537,7 @@ void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) 
 
 			if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 				wprintf(L"SACL found on service: %s\n", serviceName);
-				DisplayAceInformation(pSACL, isSingleCheck, verbose);  // Display the ACE information
+				DisplayAceInformation(pSACL, isSingleCheck, verbose, FALSE);  // Display the ACE information
 			}
 			else if (isSingleCheck) {
 				wprintf(L"No SACL or empty SACL on service: %s\n", serviceName);
@@ -508,7 +564,9 @@ BOOL CheckDirectorySACL(LPCWSTR directory, BOOL verbose) {
 
 	// Get the SACL of the directory
 	DWORD result = GetNamedSecurityInfoW(directory, SE_FILE_OBJECT, SACL_SECURITY_INFORMATION, NULL, NULL, NULL, &pSACL, &pSD);
-
+	if (verbose) {
+		wprintf(L"Checking: %s\n", directory);
+	}
 	if (result != ERROR_SUCCESS) {
 		if (verbose) {
 			wprintf(L"Failed to retrieve SACL for directory: %s (Error: %lu)\n", directory, result);
@@ -575,7 +633,7 @@ BOOL CheckDirectorySACL(LPCWSTR directory, BOOL verbose) {
 					// Check if the SIDs match
 					if (EqualSid(pAceSID, pTokenSID)) {
 						wprintf(L"Detected matching SID in SACL for directory: %s\n", directory);
-						DisplayAceInformation(pSACL, TRUE, verbose);  // Display the ACE information
+						DisplayAceInformation(pSACL, TRUE, verbose, FALSE);  // Display the ACE information
 
 						// Free resources and return TRUE to indicate a potential SACL trigger
 						free(pTokenGroups);
@@ -646,8 +704,9 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 	// Check SACL for the current key
 	HKEY hSaclKey;
 	if (RegOpenKeyEx(hSubKey, NULL, 0, READ_CONTROL | ACCESS_SYSTEM_SECURITY, &hSaclKey) == ERROR_SUCCESS) {
-		CheckSACLForRegistryKey(hSaclKey, displayPath, 1, verbose);
-		if (!CheckSACLForRegistryKey(hSubKey, displayPath, 0, verbose) && opsec) {
+		BOOL registrySaclPresent = FALSE;
+		registrySaclPresent = CheckSACLForRegistryKey(hSaclKey, displayPath, 1, verbose, opsec);
+		if (registrySaclPresent && opsec) {
 			wprintf(L"Skipping subkeys under: %s due to sensitive SACL.\n", displayPath);
 			if (subKey && *subKey) RegCloseKey(hSubKey);
 			return;  // Stop recursion
@@ -863,7 +922,7 @@ BOOL GetSACLFromADObject(LPCWSTR objectName, BOOL verbose) {
 	// Display the SACL if it has effective entries
 	if (hasEffectiveACE) {
 		wprintf(L"\nSACL for object %ls:\n", objectName);
-		DisplayAceInformation(pSACL, TRUE, verbose);
+		DisplayAceInformation(pSACL, TRUE, verbose, FALSE);
 	}
 	else if (verbose) {
 		wprintf(L"No effective SACL found for object %ls.\n", objectName);
@@ -978,8 +1037,8 @@ void HelpMenu() {
 	wprintf(L"  -r  : Check all registry keys in a hive or a specific registry key\n");
 	wprintf(L"        Expected Hive Format: HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER, HKEY_CLASSES_ROOT, HKEY_USERS, HKEY_CURRENT_CONFIG\n");
 	wprintf(L"  -s  : Check all services or a specific service\n");
-	wprintf(L"  -f  : Check all files and directories, a specific file/directory, or only files in a specific directory (with -d)\n");
-	wprintf(L"  -d  : Check all files in a specific directory\n");
+	wprintf(L"  -f  : Check a specific file or directory\n");
+	wprintf(L"  -d  : Check all files in a specific directory. Use only -d to scan the entire C:\\ drive\n");
 	wprintf(L"  -a  : Check objects in an Active Directory path\n");
 	wprintf(L"        Expected Format: \"LDAP://CN=username,CN=Users,DC=contoso,DC=local\"\n");
 	wprintf(L"  -recursive : Enable recursive mode for Active Directory\n");
@@ -1092,7 +1151,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
 			HKEY hOpenedKey;
 			if (RegOpenKeyEx(hKey, subKey, 0, KEY_READ | READ_CONTROL | ACCESS_SYSTEM_SECURITY | KEY_ENUMERATE_SUB_KEYS | KEY_WOW64_64KEY, &hOpenedKey) == ERROR_SUCCESS) {
-				CheckSACLForRegistryKey(hOpenedKey, subKey, TRUE, verboseMode);
+				CheckSACLForRegistryKey(hOpenedKey, subKey, TRUE, verboseMode, opsec);
 				RegCloseKey(hOpenedKey);
 			}
 			else {
