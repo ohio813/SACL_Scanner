@@ -898,7 +898,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 
 		// Display the SACL if it has effective entries
 		if (hasEffectiveACE) {
-			wprintf(L"\nSACL for object %ls:\n", objectName);
+			wprintf(L"SACL for object %ls:\n", objectName);
 			DisplayAceInformation(pSACL, TRUE, verbose, FALSE);
 		}
 		else if (verbose) {
