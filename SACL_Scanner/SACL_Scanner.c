@@ -81,7 +81,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 			wprintf(L"Failed to open process token. Error: %lu\n", GetLastError());
 		}
 		LocalFree(pSD);
-		return FALSE; // Assume safe if we can't retrieve the token
+		return FALSE;
 	}
 
 	// Retrieve the token groups (SIDs) from the token
@@ -97,7 +97,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 		CloseHandle(hToken);
 		LocalFree(pSD);
 		if (pTokenGroups) free(pTokenGroups);
-		return FALSE; // Assume safe if we can't retrieve token groups
+		return FALSE;
 	}
 	// Iterate over the ACEs in the SACL
 	for (DWORD i = 0; i < pSACL->AceCount; i++) {
@@ -106,7 +106,8 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 			PACE_HEADER pAceHeader = (PACE_HEADER)pAce;
 
 			// Check if it's a SYSTEM_AUDIT_ACE
-			if (pAceHeader->AceType == SYSTEM_AUDIT_ACE_TYPE) {
+			if (pAceHeader->AceType == SYSTEM_AUDIT_ACE_TYPE ) {
+
 				PSYSTEM_AUDIT_ACE pAuditAce = (PSYSTEM_AUDIT_ACE)pAce;
 
 				// Extract the SID from the ACE
@@ -118,12 +119,35 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 
 					// Check if the SIDs match
 					if (EqualSid(pAceSID, pTokenSID)) {
-						wprintf(L"Detected matching SID in SACL for object: %s\n", object);
+						wprintf(L"Detected matching SID in SACLs for object: %s\n", object);
 
 						// Free resources and return TRUE to indicate a potential SACL trigger
 						free(pTokenGroups);
 						CloseHandle(hToken);
-						return TRUE; // Trigger detected
+						return TRUE; 
+					}
+				}
+			}
+			// Check if it's a SYSTEM_AUDIT_ACE
+			else if (pAceHeader->AceType == SYSTEM_AUDIT_OBJECT_ACE_TYPE) {
+
+				PSYSTEM_AUDIT_OBJECT_ACE pAuditAce = (PSYSTEM_AUDIT_OBJECT_ACE)pAce;
+
+				// Extract the SID from the ACE
+				PSID pAceSID = (PSID)&pAuditAce->SidStart;
+
+				// Compare the ACE SID with each SID in the token
+				for (DWORD j = 0; j < pTokenGroups->GroupCount; j++) {
+					PSID pTokenSID = pTokenGroups->Groups[j].Sid;
+
+					// Check if the SIDs match
+					if (EqualSid(pAceSID, pTokenSID)) {
+						wprintf(L"Detected matching SID in SACLs for object: %s\n", object);
+
+						// Free resources and return TRUE to indicate a potential SACL trigger
+						free(pTokenGroups);
+						CloseHandle(hToken);
+						return TRUE;
 					}
 				}
 			}
@@ -407,8 +431,6 @@ void DisplayAceInformation(PACL pSACL, BOOL isSingleCheck, BOOL verbose, BOOL re
 					wprintf(L"  Auditing: Generic Write\n");
 				}
 			}
-
-
 			else {
 				wprintf(L"SACL Entry %d: Not an audit ACE.\n", i + 1);
 			}
@@ -453,24 +475,29 @@ BOOL CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose, BOOL opsec
 		}
 
 		if (opsec) {
-			OpsecCheck(pSD, bSaclPresent, pSACL, path, verbose, opsec);
+			if (OpsecCheck(pSD, bSaclPresent, pSACL, path, verbose, opsec)) {
+				if (pSD != NULL) {
+					free(pSD);
+				}
+				return TRUE;  // Return TRUE to stop recursion
+			}
+
+			LocalFree(pSD);
+			return FALSE;  // Safe to continue
 		}
 
-		LocalFree(pSD);
-		return FALSE;  // Safe to continue
-	}
-
-	else {
-		if (isSingleCheck) {
-			wprintf(L"Failed to retrieve SACL for file/directory: %s, Error: %lu\n", path, result);
+		else {
+			if (isSingleCheck) {
+				wprintf(L"Failed to retrieve SACL for file/directory: %s, Error: %lu\n", path, result);
+			}
 		}
-	}
 
-	if (pSD != NULL) {
-		free(pSD);
-	}
+		if (pSD != NULL) {
+			free(pSD);
+		}
 
-	return FALSE;
+		return FALSE;
+	}
 }
 
 
@@ -513,10 +540,14 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 				wprintf(L"No SACL or empty SACL on registry key: %s\n", subKey);
 			}
 			if (opsec) {
-				OpsecCheck(pSD, bSaclPresent, pSACL, subKey, verbose, opsec);
+				if (OpsecCheck(pSD, bSaclPresent, pSACL, subKey, verbose, opsec)) {
+					if (pSD != NULL) {
+						free(pSD);
+					}
+					return TRUE;
+				}
 			}
 		}
-
 	}
 
 	else {
@@ -533,7 +564,7 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 }
 
 // Check SACL for a service
-void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) {
+void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose, BOOL opsec) {
 	SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);  // Open the Service Control Manager
 	if (hSCManager == NULL) {  // Check if the Service Control Manager was opened successfully
 		if (isSingleCheck) {
@@ -563,6 +594,20 @@ void CheckSACLForService(LPCWSTR serviceName, BOOL isSingleCheck, BOOL verbose) 
 			if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 				wprintf(L"SACL found on service: %s\n", serviceName);
 				DisplayAceInformation(pSACL, isSingleCheck, verbose, FALSE);  // Display the ACE information
+				// Check if SACL is present
+				if (!bSaclPresent || !pSACL) {
+					LocalFree(pSD);
+					return FALSE; // No SACL means no triggers
+				}
+				if (opsec) {
+					if (OpsecCheck(pSD, bSaclPresent, pSACL, serviceName, verbose, opsec))
+					{
+						if (pSD != NULL) {
+							free(pSD);
+						}
+						return TRUE;
+					}
+				}
 			}
 			else if (isSingleCheck) {
 				wprintf(L"No SACL or empty SACL on service: %s\n", serviceName);
@@ -598,7 +643,7 @@ BOOL CheckSACLForDirectory(LPCWSTR directory, BOOL verbose, BOOL opsec) {
 		if (verbose) {
 			wprintf(L"Failed to retrieve SACL for directory: %s (Error: %lu)\n", directory, result);
 		}
-		return FALSE; // Assume no SACL triggers
+		return FALSE;
 	}
 
 	// Check if SACL is present
@@ -620,6 +665,9 @@ BOOL CheckSACLForDirectory(LPCWSTR directory, BOOL verbose, BOOL opsec) {
 	if (opsec) {
 		if (OpsecCheck(pSD, bSaclPresent, pSACL, directory, verbose, opsec))
 		{
+			if (pSD != NULL) {
+				free(pSD);
+			}
 			return TRUE;
 		}
 	}
@@ -723,7 +771,7 @@ void EnumerateRegistryKeys(HKEY hKey, LPCWSTR displayPath, LPCWSTR subKey, BOOL 
 }
 
 
-void EnumerateServices(BOOL verbose) {
+void EnumerateServices(BOOL verbose, BOOL opsec) {
 	SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
 	if ((hSCManager == NULL) && verbose) {
 		wprintf(L"Failed to open Service Control Manager. Error: %lu\n", GetLastError());
@@ -741,7 +789,7 @@ void EnumerateServices(BOOL verbose) {
 
 		if (EnumServicesStatus(hSCManager, SERVICE_WIN32, SERVICE_STATE_ALL, pServiceStatus, dwBytesNeeded, &dwBytesNeeded, &dwServicesReturned, &dwResumeHandle)) {  // Enumerate the services
 			for (DWORD i = 0; i < dwServicesReturned; i++) {  // Loop through each service
-				CheckSACLForService(pServiceStatus[i].lpServiceName, FALSE, verbose);  // Check the SACL for the service
+				CheckSACLForService(pServiceStatus[i].lpServiceName, FALSE, verbose, opsec);  // Check the SACL for the service
 			}
 		}
 
@@ -900,21 +948,22 @@ BOOL CheckSACLForADObject(LPCWSTR objectName, BOOL verbose, BOOL opsec) {
 	if (hasEffectiveACE) {
 		wprintf(L"SACL for object %ls:\n", objectName);
 		DisplayAceInformation(pSACL, TRUE, verbose, FALSE);
+		if (opsec) {
+			if (OpsecCheck(pSD, TRUE, pSACL, objectName, verbose, opsec))
+			{
+				// Clean up
+				if (pSD != NULL) {
+					free(pSD);
+				}
+				pDirObject->lpVtbl->Release(pDirObject);
+				return TRUE;
+			}
+		}
 	}
 	else if (verbose) {
 		wprintf(L"No effective SACL found for object %ls.\n", objectName);
 	}
-	// Check if SACL is present
-	if (!pSACL) {
-		LocalFree(pSD);
-		return FALSE; // No SACL means no triggers
-	}
-	if (opsec) {
-		if (OpsecCheck(pSD, TRUE, pSACL, objectName, verbose, opsec))
-		{
-			return TRUE;
-		}
-	}
+
 	// Clean up
 	if (pSD) LocalFree(pSD);
 	pDirObject->lpVtbl->Release(pDirObject);
@@ -950,7 +999,7 @@ BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose, BOO
 		hr = ADsBuildEnumerator(pContainer, &pEnum);
 		if (FAILED(hr) || ADsEnumerateNext(pEnum, 1, &var, &lFetch) != S_OK) {
 			if (verbose) {
-				wprintf(L"Failed to enumerate child objects for container: %ls\n", ldapPath);
+				wprintf(L"Retrieving SACL for single object: %ls\n", ldapPath);
 			}
 			// If enumeration fails or finds no children, treat as single object
 			CheckSACLForADObject(ldapPath, verbose, opsec);
@@ -1003,13 +1052,6 @@ BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose, BOO
 
 		pEnum->lpVtbl->Release(pEnum);
 		pContainer->lpVtbl->Release(pContainer);
-	}
-	else {
-		// If the object is not a container, treat it as a single object
-		if (verbose) {
-			wprintf(L"\nRetrieving SACL for single object: %ls\n", ldapPath);
-		}
-		CheckSACLForADObject(ldapPath, verbose, opsec);
 	}
 
 	pDisp->lpVtbl->Release(pDisp);
@@ -1152,12 +1194,12 @@ int wmain(int argc, wchar_t* argv[]) {
 	else if (serviceMode) {
 		if (isSingleCheck) {
 			// Check specific service
-			CheckSACLForService(service, TRUE, verboseMode);
+			CheckSACLForService(service, TRUE, verboseMode, opsec);
 		}
 		else {
 			// Check all services
 			wprintf(L"Checking all services...\n");
-			EnumerateServices(verboseMode);
+			EnumerateServices(verboseMode, opsec);
 		}
 	}
 	else if (fileMode) {
