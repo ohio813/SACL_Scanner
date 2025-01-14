@@ -581,7 +581,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 	}
 
 	// Function to check if any SID in the current user's token matches the SIDs in the SACL
-	BOOL CheckDirectorySACL(LPCWSTR directory, BOOL verbose, BOOL opsec) {
+	BOOL CheckSACLForDirectory(LPCWSTR directory, BOOL verbose, BOOL opsec) {
 		PSECURITY_DESCRIPTOR pSD = NULL;
 		PACL pSACL = NULL;
 		BOOL bSaclPresent = FALSE;
@@ -760,7 +760,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 
 		// Check the directory SACL if the opsec flag is enabled
 		if (opsec) {
-			if (CheckDirectorySACL(directory, verbose, opsec)) {
+			if (CheckSACLForDirectory(directory, verbose, opsec)) {
 				if (verbose) {
 					wprintf(L"Skipping directory due to SACL auditing: %s\n", directory);
 				}
@@ -812,7 +812,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 
 		// Check the directory SACL if the opsec flag is enabled
 		if (opsec) {
-			if (CheckDirectorySACL(directory, verbose, opsec)) {
+			if (CheckSACLForDirectory(directory, verbose, opsec)) {
 				wprintf(L"Skipping directory due to SACL auditing: %s\n", directory);
 				return;
 			}
@@ -836,13 +836,13 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 		FindClose(hFind);
 	}
 
-	// Modified GetSACLFromADObject function to retrieve and display the SACL
-	BOOL GetSACLFromADObject(LPCWSTR objectName, BOOL verbose) {
+	// Function to retrieve and display the SACL for AD object
+	BOOL CheckSACLForADObject(LPCWSTR objectName, BOOL verbose, BOOL opsec) {
 		HRESULT hr;
 		IDirectoryObject* pDirObject = NULL;
 		PSECURITY_DESCRIPTOR pSD = NULL;
 		PACL pSACL = NULL;
-		BOOL saclPresent = FALSE, saclDefaulted = FALSE;
+		BOOL bSaclPresent = FALSE, saclDefaulted = FALSE;
 		BOOL hasEffectiveACE = FALSE;
 
 		// Bind to the specific AD object as an IDirectoryObject
@@ -904,16 +904,26 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 		else if (verbose) {
 			wprintf(L"No effective SACL found for object %ls.\n", objectName);
 		}
-
+		// Check if SACL is present
+		if (!pSACL) {
+			LocalFree(pSD);
+			return FALSE; // No SACL means no triggers
+		}
+		if (opsec) {
+			if (OpsecCheck(pSD, TRUE, pSACL, objectName, verbose, opsec))
+			{
+				return TRUE;
+			}
+		}
 		// Clean up
 		if (pSD) LocalFree(pSD);
 		pDirObject->lpVtbl->Release(pDirObject);
 
-		return TRUE;
+		return FALSE;
 	}
 
 	// Main AD enumeration function
-	BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose) {
+	BOOL EnumerateAndRetrieveSACLs(LPCWSTR ldapPath, BOOL recurse, BOOL verbose, BOOL opsec) {
 		IDispatch* pDisp = NULL;
 		IADsContainer* pContainer = NULL;
 		IEnumVARIANT* pEnum = NULL;
@@ -943,7 +953,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 					wprintf(L"Failed to enumerate child objects for container: %ls\n", ldapPath);
 				}
 				// If enumeration fails or finds no children, treat as single object
-				GetSACLFromADObject(ldapPath, verbose);
+				CheckSACLForADObject(ldapPath, verbose, opsec);
 
 				// Clean up and release resources
 				if (pEnum) pEnum->lpVtbl->Release(pEnum);
@@ -969,7 +979,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 						if (verbose) {
 							wprintf(L"\nRetrieving SACL for: %ls\n", bstrName);
 						}
-						GetSACLFromADObject(bstrName, verbose);
+						CheckSACLForADObject(bstrName, verbose, opsec);
 
 						// If recurse is enabled, check if the object is a container and call recursively
 						if (recurse) {
@@ -979,7 +989,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 								if (verbose) {
 									wprintf(L"Recursively enumerating container: %ls\n", bstrName);
 								}
-								EnumerateAndRetrieveSACLs(bstrName, recurse, verbose);  // Recursive call
+								EnumerateAndRetrieveSACLs(bstrName, recurse, verbose, opsec);  // Recursive call
 								pChildContainer->lpVtbl->Release(pChildContainer);
 							}
 						}
@@ -999,7 +1009,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 			if (verbose) {
 				wprintf(L"\nRetrieving SACL for single object: %ls\n", ldapPath);
 			}
-			GetSACLFromADObject(ldapPath, verbose);
+			CheckSACLForADObject(ldapPath, verbose, opsec);
 		}
 
 		pDisp->lpVtbl->Release(pDisp);
@@ -1167,7 +1177,7 @@ BOOL OpsecCheck(PSECURITY_DESCRIPTOR pSD, BOOL bSaclPresent, PACL pSACL, LPCWSTR
 			}
 		}
 		else if (activeDirectoryMode) {
-			EnumerateAndRetrieveSACLs(ldapPath, recurse, verboseMode);
+			EnumerateAndRetrieveSACLs(ldapPath, recurse, verboseMode, opsec);
 		}
 		else {
 			wprintf(L"Invalid option.\n");
