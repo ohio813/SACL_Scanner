@@ -465,27 +465,25 @@ BOOL CheckSACLForFile(LPCWSTR path, BOOL isSingleCheck, BOOL verbose, BOOL opsec
 		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 			if (pSACL->AceCount != 0) {  // Check if the SACL is empty
 				wprintf(L"SACL found on file/directory: %s\n", path);
-			}
-			DisplayAceInformation(pSACL, isSingleCheck, verbose, FALSE);  // Display the ACE information
-		}
-		else {
-			if (isSingleCheck) {
-				wprintf(L"No SACL or empty SACL on file/directory: %s\n", path);
-			}
-		}
+				DisplayAceInformation(pSACL, isSingleCheck, verbose, FALSE);  // Display the ACE information
+				if (opsec) {
+					if (OpsecCheck(pSD, bSaclPresent, pSACL, path, verbose, opsec)) {
+						if (pSD != NULL) {
+							free(pSD);
+						}
+						return TRUE;  // Return TRUE to stop recursion
+					}
 
-		if (opsec) {
-			if (OpsecCheck(pSD, bSaclPresent, pSACL, path, verbose, opsec)) {
-				if (pSD != NULL) {
-					free(pSD);
+					LocalFree(pSD);
+					return FALSE;  // Safe to continue
 				}
-				return TRUE;  // Return TRUE to stop recursion
 			}
-
-			LocalFree(pSD);
-			return FALSE;  // Safe to continue
+			else {
+				if (isSingleCheck) {
+					wprintf(L"No SACL or empty SACL on file/directory: %s\n", path);
+				}
+			}
 		}
-
 		else {
 			if (isSingleCheck) {
 				wprintf(L"Failed to retrieve SACL for file/directory: %s, Error: %lu\n", path, result);
@@ -531,21 +529,20 @@ BOOL CheckSACLForRegistryKey(HKEY hKey, LPCWSTR subKey, BOOL isSingleCheck, BOOL
 		if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent && pSACL != NULL) {
 			if (pSACL->AceCount > 0) {
 				wprintf(L"SACL found on registry key: %s\n", subKey);
-
 				if (isSingleCheck) {
 					DisplayAceInformation(pSACL, isSingleCheck, verbose, TRUE);
+				}
+				if (opsec) {
+					if (OpsecCheck(pSD, bSaclPresent, pSACL, subKey, verbose, opsec)) {
+						if (pSD != NULL) {
+							free(pSD);
+						}
+						return TRUE;
+					}
 				}
 			}
 			else if (isSingleCheck && verbose) {
 				wprintf(L"No SACL or empty SACL on registry key: %s\n", subKey);
-			}
-			if (opsec) {
-				if (OpsecCheck(pSD, bSaclPresent, pSACL, subKey, verbose, opsec)) {
-					if (pSD != NULL) {
-						free(pSD);
-					}
-					return TRUE;
-				}
 			}
 		}
 	}
@@ -655,23 +652,16 @@ BOOL CheckSACLForDirectory(LPCWSTR directory, BOOL verbose, BOOL opsec) {
 	if (GetSecurityDescriptorSacl(pSD, &bSaclPresent, &pSACL, &bSaclDefaulted) && bSaclPresent) {  // Check if the SACL is present
 		wprintf(L"SACL found on directory: %s\n", directory);
 		DisplayAceInformation(pSACL, TRUE, verbose, FALSE);  // Display the ACE information
-	}
-
-	// Check if SACL is present
-	if (!bSaclPresent || !pSACL) {
-		LocalFree(pSD);
-		return FALSE; // No SACL means no triggers
-	}
-	if (opsec) {
-		if (OpsecCheck(pSD, bSaclPresent, pSACL, directory, verbose, opsec))
-		{
-			if (pSD != NULL) {
-				free(pSD);
+		if (opsec) {
+			if (OpsecCheck(pSD, bSaclPresent, pSACL, directory, verbose, opsec))
+			{
+				if (pSD != NULL) {
+					free(pSD);
+				}
+				return TRUE;
 			}
-			return TRUE;
 		}
 	}
-
 	if (pSD != NULL) {
 		free(pSD);
 	}
