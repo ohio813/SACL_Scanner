@@ -1,0 +1,65 @@
+title: Suspicious Handle Request Using Sensitive Privileges
+id: d14b4d38-b7e2-11ed-97a1-0242ac120002
+status: experimental
+description: Detects the use of sensitive privileges (SeSecurityPrivilege) combined with specific access rights (e.g., ACCESS_SYS_SEC) in object handle requests from SACL_Scanner.
+author: ToweringDragoon
+logsource:
+  category: windows
+  product: windows
+  service: security
+
+detection:
+  file_access_selection:
+    EventID: 4656
+    ObjectType: File
+    AccessList|all:
+      - "*1538*"
+      - "*1542*"
+      - "*4423*"
+    AccessMask:
+      - "0x1020080"
+    PrivilegeList|contains:
+      - SeSecurityPrivilege
+  registry_access_selection:
+    EventID: 4656
+    ObjectType: Key
+    AccessList|all:
+      - "*1538*"
+      - "*4432*"
+      - "*4435*"
+      - "*4436*"
+    AccessMask:
+      - "0x1020019"
+    PrivilegeList|contains:
+      - SeSecurityPrivilege
+  ad_object_access_selection:
+    EventID: 4662
+    OperationType: "Object Access"
+    AccessList|all:
+      - "7684"
+    AccessMask:
+      - "0x10"
+    Properties|all:
+      - "*{e48d0154-bcf8-11d1-8702-00c04fb96050}*"
+      - "*{bf9679e5-0de6-11d0-a285-00aa003049e2}*"
+  condition: |
+    file_access_selection or
+    registry_access_selection or
+    ad_object_access_selection
+
+fields:
+  - SubjectUserName
+  - SubjectDomainName
+  - SubjectLogonId
+  - ObjectName
+  - Accesses
+  - AccessMask
+  - PrivilegesUsedForAccessCheck
+  - ProcessName
+  - Properties
+
+falsepositives:
+  - Authorized administrative activity
+  - Backup or security software
+
+level: high
