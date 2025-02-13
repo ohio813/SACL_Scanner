@@ -54,4 +54,5 @@ SACL_Scanner.exe -a "LDAP://CN=username,CN=Users,DC=contoso,DC=local"
 - Use the `-recursive` option to recursively scan a container in Active Directory environments.
 - OPSEC safe mode minimizes detection risks but might limit scanning capabilities.
 - Ensure proper permissions are available to access SACLs on the targeted objects.
+- When compiling from source, make sure to set the Runtime Library flag to Multi-threaded (/MT)
 
